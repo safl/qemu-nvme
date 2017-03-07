@@ -940,7 +940,7 @@ static inline void *lnvm_meta_index(LnvmCtrl *ln, void *meta, uint32_t index)
     return meta + (index * ln->params.sos);
 }
 
-static inline int64_t lnvm_gen_to_dev_addr(LnvmCtrl *ln, uint64_t r)
+static inline int64_t lnvm_addr_to_sec_off(LnvmCtrl *ln, uint64_t r)
 {
     uint64_t ch = (r & ln->ppaf.ch_mask) >> ln->ppaf.ch_offset;
     uint64_t lun = (r & ln->ppaf.lun_mask) >> ln->ppaf.lun_offset;
@@ -948,13 +948,14 @@ static inline int64_t lnvm_gen_to_dev_addr(LnvmCtrl *ln, uint64_t r)
     uint64_t blk = (r & ln->ppaf.blk_mask) >> ln->ppaf.blk_offset;
     uint64_t pg = (r & ln->ppaf.pg_mask) >> ln->ppaf.pg_offset;
     uint64_t sec = (r & ln->ppaf.sec_mask) >> ln->ppaf.sec_offset;
+
     uint64_t lun_off = lun * ln->params.sec_per_lun;
     uint64_t blk_off = blk * ln->params.sec_per_blk;
     uint64_t pg_off = pg * ln->params.sec_per_pl;
     uint64_t pln_off = pln * ln->params.sec_per_pg;
     uint32_t ret;
 
-    ret = sec + pg_off + blk_off + lun_off + pln_off;
+    ret = lun_off + blk_off + pg_off + pln_off + sec;
     if (ret > ln->params.total_secs) {
         printf("lnvm: ppa OOB:ch:%lu,lun:%lu,blk:%lu,pg:%lu,pl:%lu,sec:%lu\n",
                 ch, lun, blk, pg, pln, sec);
@@ -1051,8 +1052,8 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     req->lnvm_slba = le64_to_cpu(lrw->slba);
     req->is_write = is_write;
 
-    sppa = lnvm_gen_to_dev_addr(ln, psl[0]);
-    eppa = lnvm_gen_to_dev_addr(ln, psl[n_pages - 1]);
+    sppa = lnvm_addr_to_sec_off(ln, psl[0]);
+    eppa = lnvm_addr_to_sec_off(ln, psl[n_pages - 1]);
     if (sppa == -1 || eppa == -1) {
         printf("lnvm_rw: EINVAL\n");
         err = -EINVAL;
@@ -1075,7 +1076,7 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
      * handlers to write/read data to/from the right physical sector
      */
     for (i = 0; i < n_pages; i++) {
-        ppa = lnvm_gen_to_dev_addr(ln, psl[i]);
+        ppa = lnvm_addr_to_sec_off(ln, psl[i]);
         sector_list[i] = ppa;
         aio_sector_list[i] =
                     ns->start_block + (ppa << (data_shift - BDRV_SECTOR_BITS));
