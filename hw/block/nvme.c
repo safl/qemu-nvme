@@ -876,7 +876,7 @@ static inline int lnvm_meta_state_set_written(LnvmCtrl *ln, uint64_t ppa)
     uint32_t seek = ppa * meta_len;
     size_t ret;
 
-    pritnf("lnvm_meta_state_set_written: ppa(0x%016lx), seek(%d)\n", ppa, seek);
+    printf("lnvm_meta_state_set_written: ppa(0x%016lx), seek(%d)\n", ppa, seek);
 
     if (fseek(meta_fp, seek, SEEK_SET)) {
         perror("_set_written_state: fseek");
@@ -927,7 +927,7 @@ static inline int lnvm_meta_state_set_written(LnvmCtrl *ln, uint64_t ppa)
  * Retrieve the state of sector at the given ppa and store it in state
  */
 static inline int lnvm_meta_state_get(LnvmCtrl *ln, uint64_t ppa,
-                                        uint32_t *state)
+                                      uint32_t *state)
 {
     FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
@@ -1129,6 +1129,8 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
             }
 
             if (state != LNVM_SEC_WRITTEN) {
+                printf("lnvm_rw: read failed -- state != LNVM_SEC_WRITTEN\n");
+
                 bitmap_set(&cqe->res64, i, n_pages - i);
                 req->status = 0x42ff;
 
