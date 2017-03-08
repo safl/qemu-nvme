@@ -728,7 +728,10 @@ struct lnvm_tgt_meta {
     uint64_t rsvd;
 } __attribute__((__packed__));
 
-/* Must be used after nvme_set_write_state to have the right file offset */
+/**
+ * Ensure that `lnvm_set_written_state` has been called prior to this function
+ * to ensure correct file offset
+ */
 static inline int lnvm_meta_write(LnvmCtrl *ln, void *meta, uint64_t ppa)
 {
     FILE *fp = ln->metadata;
@@ -747,7 +750,10 @@ static inline int lnvm_meta_write(LnvmCtrl *ln, void *meta, uint64_t ppa)
     return 0;
 }
 
-/* Must be used after lnvm_meta_check_state to have the right file offset */
+/**
+ * Ensure that `lnvm_meta_check_state` has been called to have the correct file
+ * offset
+ */
 static inline int lnvm_meta_read(LnvmCtrl *ln, void *meta, uint64_t ppa)
 {
     FILE *fp = ln->metadata;
@@ -769,29 +775,29 @@ static inline int lnvm_meta_read(LnvmCtrl *ln, void *meta, uint64_t ppa)
 static inline int64_t lnvm_bbt_pos_get(LnvmCtrl *ln, uint64_t r)
 {
     LnvmIdGroup *c = &ln->id_ctrl.groups[0];
+
     uint64_t lun = (r & ln->ppaf.lun_mask) >> ln->ppaf.lun_offset;
     uint64_t blk = (r & ln->ppaf.blk_mask) >> ln->ppaf.blk_offset;
     uint64_t pln = (r & ln->ppaf.pln_mask) >> ln->ppaf.pln_offset;
+
     uint64_t lun_off = lun * c->num_blk * c->num_pln;
     uint64_t blk_off = blk * c->num_pln;
 
     return pln + blk_off + lun_off;
 }
 
-static inline int lnvm_erase_meta(NvmeNamespace *ns, LnvmCtrl *ln,
+static inline int lnvm_meta_blk_set_erased(NvmeNamespace *ns, LnvmCtrl *ln,
                                   uint64_t *psl, int nr_ppas)
 {
     LnvmIdGroup *c = &ln->id_ctrl.groups[0];
-    FILE *fp = ln->metadata;
-    struct lnvm_metadata_format meta;
+    FILE *meta_fp = ln->metadata;
+    struct lnvm_metadata_format meta = {.state = LNVM_SEC_ERASED};
     size_t tgt_oob_len = ln->params.sos;
     size_t int_oob_len = ln->int_meta_size;
     size_t meta_len = tgt_oob_len + int_oob_len;
     uint8_t nr_blks = nr_ppas / c->num_pln;
     int ret;
     int blk, i, j;
-
-    meta.state = LNVM_SEC_ERASED;
 
     /*
      * NOTE: Checks do not seem valid since it only applies when plane-mode is
@@ -814,26 +820,28 @@ static inline int lnvm_erase_meta(NvmeNamespace *ns, LnvmCtrl *ln,
         uint64_t ch = (r & ln->ppaf.ch_mask) >> ln->ppaf.ch_offset;
         uint64_t lun = (r & ln->ppaf.lun_mask) >> ln->ppaf.lun_offset;
         uint64_t blk = (r & ln->ppaf.blk_mask) >> ln->ppaf.blk_offset;
+
         uint64_t lun_off = lun * ln->params.sec_per_lun;
         uint64_t blk_off = blk * ln->params.sec_per_blk;
         uint64_t ppa = blk_off + lun_off;
+
         uint64_t bb_pos;
 
         for (i = 0; i < c->num_pln; i++) {
             /* Fail erase if the block is marked as bad */
             bb_pos = lnvm_bbt_pos_get(ln, psl[blk_pos + i]);
             if (ns->bbtbl[bb_pos]) {
-                printf("_erase_meta: failed -- already erased\n");
+                printf("_erase_meta: failed -- block is bad\n");
                 return -1;
             }
 
-            if (fseek(fp, ppa * meta_len , SEEK_SET)) {
+            if (fseek(meta_fp, ppa * meta_len , SEEK_SET)) {
                 printf("_erase_meta: Could not write OOB to metadata file\n");
                 return -1;
             }
 
             for (j = 0; j < ln->params.sec_per_blk; j++) {
-                ret = fwrite(&meta, meta_len, 1, fp);
+                ret = fwrite(&meta, meta_len, 1, meta_fp);
                 if (ret != 1) {
                     printf("Failed to erase ch:%lu,lun:%lu,blk:%lu - ret:%d/%d\n",
                                     ch, lun, blk, ret, ln->params.sec_per_blk);
@@ -843,7 +851,7 @@ static inline int lnvm_erase_meta(NvmeNamespace *ns, LnvmCtrl *ln,
         }
     }
 
-    if (fflush(fp))
+    if (fflush(meta_fp))
         printf("Could not write to metadata file:%d\n", errno);
 
     return 0;
@@ -851,7 +859,7 @@ static inline int lnvm_erase_meta(NvmeNamespace *ns, LnvmCtrl *ln,
 
 static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
 {
-    FILE *fp = ln->metadata;
+    FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
     size_t int_oob_len = ln->int_meta_size;
     size_t meta_len = tgt_oob_len + int_oob_len;
@@ -859,57 +867,63 @@ static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
     uint32_t seek = ppa * meta_len;
     size_t ret;
 
-    if (fseek(fp, seek, SEEK_SET)) {
-        printf("Could not write OOB to metadata file\n");
+    if (fseek(meta_fp, seek, SEEK_SET)) {
+        perror("_set_written_state: fseek");
+        printf("_set_written_state: Could not seek to position\n");
         return -1;
     }
 
-    ret = fread(&state, int_oob_len, 1, fp);
+    ret = fread(&state, int_oob_len, 1, meta_fp);
     if (ret != 1) {
         if (errno == EAGAIN)
             return 0;
-        printf("Could not read metadata file - ppa:%lu (ret:%lu)\n", ppa, ret);
-        perror("read");
+        perror("_set_written_state: fread");
+        printf("_set_written_state: ppa:%lu (ret:%lu)\n", ppa, ret);
         return -1;
     }
 
     if (state != LNVM_SEC_ERASED) {
-        printf("Attempting to write to non erased block (%d)\n", state);
+        printf("_set_written_state: Writing to non-erased block (%d)\n", state);
         return -1;
     }
 
-    if (fseek(fp, seek, SEEK_SET)) {
-        printf("Could not write OOB to metadata file\n");
+    if (fseek(meta_fp, seek, SEEK_SET)) {
+        perror("_set_written_state: fseek");
+        printf("_set_written_state: Could not write OOB to metadata file\n");
         return -1;
     }
 
     state = LNVM_SEC_WRITTEN;
-    ret = fwrite(&state, int_oob_len, 1, fp);
+    ret = fwrite(&state, int_oob_len, 1, meta_fp);
     if (ret != 1) {
-        printf("Could not write state to metadata file\n");
+        perror("_set_written_state: fwrite");
+        printf("_set_written_state: Could not write state to metadata file\n");
         return -1;
     }
 
-    if (fflush(fp))
-        printf("Could not write to metadata file:%d\n", errno);
+    if (fflush(meta_fp)) {
+        perror("_set_written_state: fflush");
+        printf("_set_written_state: Could not write to metadata file\n");
+    }
 
     return 0;
 }
 
-static inline int lnvm_meta_check_state(LnvmCtrl *ln, uint64_t ppa, uint32_t *state)
+static inline int lnvm_meta_check_state(LnvmCtrl *ln, uint64_t ppa,
+                                        uint32_t *state)
 {
-    FILE *fp = ln->metadata;
+    FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
     size_t int_oob_len = ln->int_meta_size;
     size_t meta_len = tgt_oob_len + int_oob_len;
     size_t ret;
 
-    if (fseek(fp, ppa * meta_len , SEEK_SET)) {
+    if (fseek(meta_fp, ppa * meta_len , SEEK_SET)) {
         printf("Could not write OOB to metadata file\n");
         return -1;
     }
 
-    ret = fread(state, int_oob_len, 1, fp);
+    ret = fread(state, int_oob_len, 1, meta_fp);
     if (ret != 1) {
         if (errno == EAGAIN)
             return 0;
@@ -1695,7 +1709,7 @@ static uint16_t lnvm_erase_async(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
     req->nlb = nlb;
     req->ns = ns;
 
-    if (lnvm_erase_meta(ns, ln, psl, nlb)) {
+    if (lnvm_meta_blk_set_erased(ns, ln, psl, nlb)) {
         printf("Erased failed\n");
         print_ppa(ln, psl[0]);
         req->status = 0x40ff;

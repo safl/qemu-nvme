@@ -1033,7 +1033,7 @@ typedef struct LnvmCtrl {
     uint32_t       n_err_write;
     uint32_t       err_write_cnt;
     FILE           *metadata;
-    uint8_t        int_meta_size;
+    uint8_t        int_meta_size;       // # of bytes for "internal" metadata
 } LnvmCtrl;
 
 typedef struct NvmeCtrl {
