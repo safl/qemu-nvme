@@ -729,43 +729,52 @@ struct lnvm_tgt_meta {
 } __attribute__((__packed__));
 
 /**
- * Ensure that `lnvm_set_written_state` has been called prior to this function
- * to ensure correct file offset
+
  */
-static inline int lnvm_meta_write(LnvmCtrl *ln, void *meta, uint64_t ppa)
+
+/**
+ * Write a single out-of-bound area entry
+ *
+ * NOTE: Ensure that `lnvm_set_written_state` has been called prior to this
+ * function to ensure correct file offset of ln->metadata?
+ */
+static inline int lnvm_meta_write(LnvmCtrl *ln, void *meta)
 {
-    FILE *fp = ln->metadata;
+    FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
     size_t ret;
 
-    ret = fwrite(meta, tgt_oob_len, 1, fp);
+    ret = fwrite(meta, tgt_oob_len, 1, meta_fp);
     if (ret != 1) {
-        printf("Could not write to metadata file\n");
+        perror("lnvm_meta_write: fwrite");
         return -1;
     }
 
-    if (fflush(fp))
-        printf("Could not write to metadata file:%d\n", errno);
+    if (fflush(meta_fp)) {
+        perror("lnvm_meta_write: fflush");
+        return -1;
+    }
 
     return 0;
 }
 
 /**
- * Ensure that `lnvm_meta_check_state` has been called to have the correct file
- * offset
+ * Read a single out-of-bound area entry
+ *
+ * NOTE: Ensure that `lnvm_meta_state_get` has been called to have the correct
+ * file offset in ln->metadata?
  */
-static inline int lnvm_meta_read(LnvmCtrl *ln, void *meta, uint64_t ppa)
+static inline int lnvm_meta_read(LnvmCtrl *ln, void *meta)
 {
-    FILE *fp = ln->metadata;
+    FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
     size_t ret;
 
-    ret = fread(meta, tgt_oob_len, 1, fp);
+    ret = fread(meta, tgt_oob_len, 1, meta_fp);
     if (ret != 1) {
         if (errno == EAGAIN)
             return 0;
-        printf("Could not read metadata file - ppa:%lu (ret:%lu)\n", ppa, ret);
-        perror("read");
+        perror("lnvm_meta_read: fread");
         return -1;
     }
 
@@ -857,7 +866,7 @@ static inline int lnvm_meta_blk_set_erased(NvmeNamespace *ns, LnvmCtrl *ln,
     return 0;
 }
 
-static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
+static inline int lnvm_meta_state_set_written(LnvmCtrl *ln, uint64_t ppa)
 {
     FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
@@ -867,6 +876,8 @@ static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
     uint32_t seek = ppa * meta_len;
     size_t ret;
 
+    pritnf("lnvm_meta_state_set_written: ppa(0x%016lx), seek(%d)\n", ppa, seek);
+
     if (fseek(meta_fp, seek, SEEK_SET)) {
         perror("_set_written_state: fseek");
         printf("_set_written_state: Could not seek to position\n");
@@ -875,8 +886,10 @@ static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
 
     ret = fread(&state, int_oob_len, 1, meta_fp);
     if (ret != 1) {
-        if (errno == EAGAIN)
+        if (errno == EAGAIN) {
+            perror("_set_written_state: Why is this not an error?\n");
             return 0;
+        }
         perror("_set_written_state: fread");
         printf("_set_written_state: ppa:%lu (ret:%lu)\n", ppa, ret);
         return -1;
@@ -904,31 +917,39 @@ static inline int lnvm_meta_set_written_state(LnvmCtrl *ln, uint64_t ppa)
     if (fflush(meta_fp)) {
         perror("_set_written_state: fflush");
         printf("_set_written_state: Could not write to metadata file\n");
+        return -1;
     }
 
     return 0;
 }
 
-static inline int lnvm_meta_check_state(LnvmCtrl *ln, uint64_t ppa,
+/**
+ * Retrieve the state of sector at the given ppa and store it in state
+ */
+static inline int lnvm_meta_state_get(LnvmCtrl *ln, uint64_t ppa,
                                         uint32_t *state)
 {
     FILE *meta_fp = ln->metadata;
     size_t tgt_oob_len = ln->params.sos;
     size_t int_oob_len = ln->int_meta_size;
     size_t meta_len = tgt_oob_len + int_oob_len;
+    uint32_t seek = ppa * meta_len;
     size_t ret;
 
-    if (fseek(meta_fp, ppa * meta_len , SEEK_SET)) {
-        printf("Could not write OOB to metadata file\n");
+    if (fseek(meta_fp, seek, SEEK_SET)) {
+        perror("lnvm_meta_state_get: fseek");
+        printf("Could not seek to offset in metadata file\n");
         return -1;
     }
 
     ret = fread(state, int_oob_len, 1, meta_fp);
     if (ret != 1) {
-        if (errno == EAGAIN)
+        if (errno == EAGAIN) {
+            printf("lnvm_meta_state_get: Why is this not an error?\n");
             return 0;
-        printf("Could not read metadata file - ppa:%lu (ret:%lu)\n", ppa, ret);
-        perror("read");
+        }
+        perror("lnvm_meta_state_get: fread");
+        printf("lnvm_meta_state_get: ppa(%lu), ret(%lu)\n", ppa, ret);
         return -1;
     }
 
@@ -949,20 +970,20 @@ static inline int64_t lnvm_addr_to_sec_off(LnvmCtrl *ln, uint64_t r)
     uint64_t pg = (r & ln->ppaf.pg_mask) >> ln->ppaf.pg_offset;
     uint64_t sec = (r & ln->ppaf.sec_mask) >> ln->ppaf.sec_offset;
 
-    uint64_t lun_off = lun * ln->params.sec_per_lun;
-    uint64_t blk_off = blk * ln->params.sec_per_blk;
-    uint64_t pg_off = pg * ln->params.sec_per_pl;
-    uint64_t pln_off = pln * ln->params.sec_per_pg;
-    uint32_t ret;
+    uint64_t off = sec;
 
-    ret = lun_off + blk_off + pg_off + pln_off + sec;
-    if (ret > ln->params.total_secs) {
+    off += pln * ln->params.sec_per_pg;
+    off += pg * ln->params.sec_per_pl;
+    off += blk * ln->params.sec_per_blk;
+    off += lun * ln->params.sec_per_lun;
+
+    if (off > ln->params.total_secs) {
         printf("lnvm: ppa OOB:ch:%lu,lun:%lu,blk:%lu,pg:%lu,pl:%lu,sec:%lu\n",
                 ch, lun, blk, pg, pln, sec);
         return -1;
     }
 
-    return ret;
+    return off;
 }
 
 static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
@@ -1082,7 +1103,7 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
                     ns->start_block + (ppa << (data_shift - BDRV_SECTOR_BITS));
 
         if (is_write) {
-            if (!lnvm_hybrid_dev(n) && lnvm_meta_set_written_state(ln, ppa)) {
+            if (!lnvm_hybrid_dev(n) && lnvm_meta_state_set_written(ln, ppa)) {
                 printf("lnvm_rw: set written status failed\n");
                 print_ppa(ln, psl[i]);
                 err = NVME_INVALID_FIELD | NVME_DNR;
@@ -1090,7 +1111,7 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
             }
 
             if (meta) {
-                if (lnvm_meta_write(ln, lnvm_meta_index(ln, msl, i), ppa)) {
+                if (lnvm_meta_write(ln, lnvm_meta_index(ln, msl, i))) {
                     printf("lnvm_rw: write metadata failed\n");
                     print_ppa(ln, psl[i]);
                     err = NVME_INVALID_FIELD | NVME_DNR;
@@ -1100,7 +1121,7 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
         } else if (!is_write){
             uint32_t state;
 
-            if (!lnvm_hybrid_dev(n) && lnvm_meta_check_state(ln, ppa, &state)) {
+            if (!lnvm_hybrid_dev(n) && lnvm_meta_state_get(ln, ppa, &state)) {
                 printf("lnvm_rw: read status failed\n");
                 print_ppa(ln, psl[i]);
                 err = NVME_INVALID_FIELD | NVME_DNR;
@@ -1120,7 +1141,7 @@ static uint16_t lnvm_rw(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
             }
 
             if (meta) {
-                if (lnvm_meta_read(ln, lnvm_meta_index(ln, msl, i), ppa)) {
+                if (lnvm_meta_read(ln, lnvm_meta_index(ln, msl, i))) {
                     printf("lnvm_rw: read metadata failed\n");
                     print_ppa(ln, psl[i]);
                     err = NVME_INVALID_FIELD | NVME_DNR;
