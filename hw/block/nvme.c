@@ -1704,6 +1704,8 @@ static uint16_t lnvm_erase_async(NvmeCtrl *n, NvmeNamespace *ns, NvmeCmd *cmd,
         psl[0] = spba;
     }
 
+    printf("units(%d), secs(%d)\n", ln->params.total_units, ln->params.total_secs);
+
     req->slba = spba;
     req->meta_size = 0;
     req->status = NVME_SUCCESS;
