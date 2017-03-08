@@ -1021,7 +1021,7 @@ typedef struct LnvmCtrl {
     LnvmIdCtrl     id_ctrl;
     LnvmAddrF      ppaf;
     uint8_t        read_l2p_tbl;
-    uint8_t        bb_gen_freq; // NOTE: What is this?
+    uint8_t        bbt_gen_freq;
     uint8_t        bbt_auto_gen;
     uint8_t        meta_auto_gen;
     uint8_t        debug;

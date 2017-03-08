@@ -1494,11 +1494,11 @@ static int lnvm_bbt_load(NvmeNamespace *ns, uint32_t nr_blocks,
 {
     uint32_t i;
 
-    if (!ln->bb_gen_freq)
+    if (!ln->bbt_gen_freq)
         return 0;
 
     for (i = 0; i < nr_blocks; i++) {
-        if ((i % ln->bb_gen_freq) == 0) {
+        if ((i % ln->bbt_gen_freq) == 0) {
             blks[i] = 0x1;
         }
     }
@@ -3353,7 +3353,7 @@ static Property nvme_props[] = {
     DEFINE_PROP_STRING("lbbtable", NvmeCtrl, lnvm_ctrl.bbt_fname),
     DEFINE_PROP_STRING("lmetadata", NvmeCtrl, lnvm_ctrl.meta_fname),
     DEFINE_PROP_UINT16("lmetasize", NvmeCtrl, lnvm_ctrl.params.sos, 16),
-    DEFINE_PROP_UINT8("lbbfrequency", NvmeCtrl, lnvm_ctrl.bb_gen_freq, 0),
+    DEFINE_PROP_UINT8("lbbfrequency", NvmeCtrl, lnvm_ctrl.bbt_gen_freq, 0),
     DEFINE_PROP_UINT32("lb_err_write", NvmeCtrl, lnvm_ctrl.err_write, 0),
     DEFINE_PROP_UINT32("ln_err_write", NvmeCtrl, lnvm_ctrl.n_err_write, 0),
     DEFINE_PROP_UINT8("ldebug", NvmeCtrl, lnvm_ctrl.debug, 0),
